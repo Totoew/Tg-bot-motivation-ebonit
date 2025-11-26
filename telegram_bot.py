@@ -6,7 +6,6 @@ from send_final import preview_mode, send_mode
 with open(r"C:\Users\Пользователь\Desktop\bot-token.txt", 'r', encoding='utf-8') as file:
     content = file.read()
 
-# Инициализация бота
 bot = telebot.TeleBot(content)
 
 # Хранилище состояний пользователей
