@@ -1,8 +1,9 @@
 motivation_videos = [
+   'https://vkvideo.ru/video-96547297_456242096',
    'https://vkvideo.ru/clip497946239_456239722',
    'https://vk.com/video-185117189_456242467?list=203741944be79f8642',
    'https://vkvideo.ru/video204726522_456239890',
-    'https://vkvideo.ru/video-96547297_456242096',
+   'https://vkvideo.ru/clip497946239_456239722'
    'https://vksport.vkvideo.ru/video-216257332_456239558',
    'https://vkvideo.ru/video56595220_456239741',
    'https://vkvideo.ru/clip-222478675_456239370',
