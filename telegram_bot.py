@@ -1,8 +1,20 @@
+import time
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
 import os
 import pandas as pd
-from send_final import preview_mode, send_mode
+import io
+from send_final import (
+    preview_mode,
+    send_mode,
+    extract_lesson_number,
+    parse_lesson_range,
+    get_best_hw_info,
+    format_best_hw,
+    create_detailed_graph,
+    extract_name
+)
+
 with open(r"C:\Users\Пользователь\Desktop\bot-token.txt", 'r', encoding='utf-8') as file:
     content = file.read()
 
@@ -10,12 +22,6 @@ bot = telebot.TeleBot(content)
 
 user_data = {}
 
-def debug_user_data(user_id):
-    """Функция для отладки - показывает текущее состояние пользователя"""
-    if user_id in user_data:
-        print(f"🔍 DEBUG user_{user_id}: {user_data[user_id]}")
-    else:
-        print(f"🔍 DEBUG user_{user_id}: NO DATA")
 
 @bot.message_handler(commands=['start'])
 def start(message):
@@ -26,8 +32,10 @@ def start(message):
     keyboard = InlineKeyboardMarkup()
     keyboard.add(InlineKeyboardButton("👁️ ПРЕВЬЮ", callback_data="preview"))
     keyboard.add(InlineKeyboardButton("📤 ОТПРАВКА", callback_data="send"))
+    keyboard.add(InlineKeyboardButton("📊 ПОЛУЧИТЬ СТАТИСТИКУ", callback_data="get_stats"))
     keyboard.add(InlineKeyboardButton("⚙️ НАСТРОЙКИ", callback_data="settings"))
-    keyboard.add(InlineKeyboardButton("🎥 ВИДЕО-ИНСТРУКЦИЯ", url="https://docs.google.com/document/d/1utGllba1nr1QqmnLpOK03hwYpY87NmVIyDgsfk3kJpA/edit?usp=sharing"))
+    keyboard.add(InlineKeyboardButton("🎥 ВИДЕО-ИНСТРУКЦИЯ",
+                                      url="https://docs.google.com/document/d/1utGllba1nr1QqmnLpOK03hwYpY87NmVIyDgsfk3kJpA/edit?usp=sharing"))
 
     bot.send_message(
         message.chat.id,
@@ -50,22 +58,24 @@ def handle_callback(call):
         bot.send_message(call.message.chat.id, "📁 Загрузите Excel файл:")
         user_data[user_id] = {'step': 'waiting_excel', 'mode': 'send'}
 
+    elif call.data == "get_stats":
+        bot.send_message(call.message.chat.id, "📁 Загрузите Excel файл для статистики:")
+        user_data[user_id] = {'step': 'waiting_stats_excel'}
+
     elif call.data == "settings":
         show_instructions(call.message)
 
     elif call.data == "back_to_menu":
-        # Удаляем сообщение с инструкцией и возвращаем в меню
         try:
             bot.delete_message(call.message.chat.id, call.message.message_id)
         except:
             pass
         start(call.message)
 
-def show_instructions(message):
 
+def show_instructions(message):
     instructions = """
 🔧 ИНСТРУКЦИЯ ПО ИСПОЛЬЗОВАНИЮ БОТА
-Видео по настройке: https://vk.com/video550891157_456240007?list=ln-uAvDnXEJZhbLzMlBoi
 
 🎯 РЕЖИМ «ПРЕВЬЮ»:
 • Отправляет примеры сообщений кураторам для проверки
@@ -78,22 +88,24 @@ def show_instructions(message):
 • Можно указать номера студентов для пропуска
 • Каждый студент получает 2 сообщения: текст+график и видео
 
+📊 СТАТИСТИКА:
+• Генерирует графики успеваемости для всех студентов
+• Показывает статистику по выполнению ДЗ
+• Отправляет результаты в телеграм
+
 📊 КАТЕГОРИИ СТУДЕНТОВ:
 • Категория 1 - лучшие результаты (≥70% + все сложные ДЗ)
 • Категория 2 - хорошие результаты (≥42%)
 • Категория 3 - нужно улучшить результат (<42%)
 
 🔄 ПРОЦЕСС РАБОТЫ:
-1. Выберите режим (Превью/Отправка)
+1. Выберите режим (Превью/Отправка/Статистика)
 2. Загрузите Excel файл
-3. Введите VK токен
-4. Укажите номер блока (например: 9)
-5. Укажите диапазон ДЗ (например: 12-17)
-6. Для отправки - укажите студентов для пропуска
-7. Подтвердите отправку
+3. Введите необходимые параметры
+4. Получите результат
 
-⏱ *ВРЕМЯ ОТПРАВКИ:*
-• В среднем 5 минут на 30 учеников
+⏱ *ВРЕМЯ ОБРАБОТКИ:*
+• В среднем 2-3 минуты на 30 учеников
 
 ❓ ЧАСТЫЕ ПРОБЛЕМЫ:
 • Файл не загружается - проверьте формат (.xlsx/.xls)
@@ -103,7 +115,6 @@ def show_instructions(message):
 📞 ПОДДЕРЖКА:
 Если возникли проблемы - обратитесь к разработчику бота @totoevv.
 """
-    # Создаем клавиатуру для возврата в меню
     keyboard = InlineKeyboardMarkup()
     keyboard.add(InlineKeyboardButton("⬅️ В главное меню", callback_data="back_to_menu"))
 
@@ -114,12 +125,340 @@ def show_instructions(message):
         parse_mode='Markdown'
     )
 
-@bot.message_handler(content_types=['document'])
-def handle_document(message):
-    """Обработка загруженных Excel файлов"""
+
+@bot.message_handler(func=lambda message: user_data.get(message.from_user.id, {}).get('step') == 'waiting_stats_excel',
+                     content_types=['document'])
+def handle_stats_excel(message):
+    """Обрабатывает загрузку Excel файла для статистики"""
     user_id = message.from_user.id
 
-    if user_data.get(user_id, {}).get('step') != 'waiting_excel':
+    if not message.document.file_name.endswith(('.xlsx', '.xls')):
+        bot.send_message(message.chat.id, "❌ Пожалуйста, загрузите Excel файл (.xlsx или .xls)")
+        return
+
+    try:
+        file_info = bot.get_file(message.document.file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+
+        file_path = f"temp_stats_{user_id}_{message.document.file_name}"
+        with open(file_path, 'wb') as new_file:
+            new_file.write(downloaded_file)
+
+        user_data[user_id]['excel_file'] = file_path
+        user_data[user_id]['step'] = 'waiting_stats_lesson_range'
+
+        bot.send_message(
+            message.chat.id,
+            "✅ Файл загружен! Теперь введите диапазон домашек (например: 12-21):"
+        )
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка загрузки файла: {e}")
+
+
+@bot.message_handler(
+    func=lambda message: user_data.get(message.from_user.id, {}).get('step') == 'waiting_stats_lesson_range')
+def handle_stats_lesson_range(message):
+    """Обрабатывает ввод диапазона для статистики"""
+    user_id = message.from_user.id
+
+    try:
+        lesson_range = message.text.strip()
+
+        # Проверяем формат диапазона
+        if '-' not in lesson_range:
+            bot.send_message(message.chat.id, "❌ Неверный формат. Используйте формат: 12-21")
+            return
+
+        user_data[user_id]['lesson_range'] = lesson_range
+        user_data[user_id]['step'] = 'waiting_stats_limit'  # МЕНЯЕМ ШАГ
+
+        bot.send_message(
+            message.chat.id,
+            "👥 *Сколько учеников вывести?*\n\n"
+            "Введите число (например: 10) или 'все' для вывода всех учеников:",
+            parse_mode='Markdown'
+        )
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
+
+
+# ДОБАВЛЯЕМ НОВЫЙ ОБРАБОТЧИК ДЛЯ ЛИМИТА
+@bot.message_handler(func=lambda message: user_data.get(message.from_user.id, {}).get('step') == 'waiting_stats_limit')
+def handle_stats_limit(message):
+    """Обрабатывает ввод лимита учеников для статистики"""
+    user_id = message.from_user.id
+
+    try:
+        limit_input = message.text.strip().lower()
+
+        if limit_input == 'все':
+            user_data[user_id]['limit'] = None  # Без лимита
+        else:
+            try:
+                limit = int(limit_input)
+                if limit <= 0:
+                    bot.send_message(message.chat.id, "❌ Число должно быть больше 0")
+                    return
+                user_data[user_id]['limit'] = limit
+            except ValueError:
+                bot.send_message(message.chat.id, "❌ Введите число или 'все'")
+                return
+
+        # Сразу начинаем обработку
+        bot.send_message(message.chat.id, "⏳ Начинаю анализ данных...")
+        generate_and_send_stats(
+            message,
+            user_data[user_id]['excel_file'],
+            user_data[user_id]['lesson_range'],
+            user_data[user_id].get('limit')  # ПЕРЕДАЕМ ЛИМИТ
+        )
+
+        # Очистка
+        if os.path.exists(user_data[user_id]['excel_file']):
+            os.remove(user_data[user_id]['excel_file'])
+        user_data[user_id] = {'step': 'main_menu'}
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
+
+
+def generate_and_send_stats(message, excel_file, lesson_range, limit=None):
+    """Генерирует и отправляет статистику - с лимитом учеников"""
+    try:
+        # Читаем Excel файл
+        df_full = pd.read_excel(excel_file, header=None)
+        headers = df_full.iloc[0]
+        max_scores_row = df_full.iloc[6]
+        student_rows = list(df_full.iloc[7:].iterrows())
+
+        # Выбор столбцов по диапазону
+        hw_columns = []
+        lesson_numbers = []
+        for col_idx in headers[19:].index:
+            num = extract_lesson_number(headers[col_idx])
+            if num is not None and num in parse_lesson_range(lesson_range):
+                hw_columns.append(col_idx)
+                lesson_numbers.append(num)
+
+        if not hw_columns:
+            bot.send_message(message.chat.id, "❌ Не найдено ДЗ в указанном диапазоне")
+            return
+
+        combined = sorted(zip(lesson_numbers, hw_columns))
+        lesson_numbers, hw_columns = zip(*combined)
+        lesson_numbers = list(lesson_numbers)
+        hw_columns = list(hw_columns)
+
+        # Фильтруем студентов с VK ID
+        students_to_process = []
+        for original_idx, row in student_rows:
+            full_name = row.iloc[1]
+            vk_id_raw = row.iloc[2]
+
+            if pd.notna(vk_id_raw) and str(vk_id_raw).isdigit():
+                students_to_process.append((original_idx, row))
+
+        # Применяем лимит если указан
+        original_count = len(students_to_process)
+        if limit is not None and limit < len(students_to_process):
+            students_to_process = students_to_process[:limit]
+            limit_text = f" (лимит: {limit})"
+        else:
+            limit_text = ""
+
+        total_to_process = len(students_to_process)
+        processed_count = 0
+
+        if total_to_process == 0:
+            bot.send_message(message.chat.id, "❌ В файле нет студентов с корректными VK ID")
+            return
+
+        # Отправляем начальное сообщение
+        progress_msg = bot.send_message(
+            message.chat.id,
+            f"📊 Обрабатываю {total_to_process} студентов{limit_text}..."
+        )
+
+        # Обрабатываем студентов группами
+        batch_size = 3
+        for batch_start in range(0, len(students_to_process), batch_size):
+            batch_end = min(batch_start + batch_size, len(students_to_process))
+            batch = students_to_process[batch_start:batch_end]
+
+            for original_idx, row in batch:
+                full_name = row.iloc[1]
+                vk_id_raw = row.iloc[2]
+                name = extract_name(full_name)
+                lives_raw = row.iloc[4]
+                lives = int(lives_raw) if pd.notna(lives_raw) else 0
+
+                # Собираем статистику
+                student_scores = []
+                max_scores = []
+                total_score = 0
+                test_done_count = 0
+                test_total_count = 0
+                hard_scores = []
+
+                for col in hw_columns:
+                    stud_val = row[col] if pd.notna(row[col]) else 0
+                    max_val = max_scores_row[col] if pd.notna(max_scores_row[col]) else 1
+                    stud_val = float(stud_val) if str(stud_val).replace('.', '').isdigit() else 0
+                    max_val = float(max_val) if str(max_val).replace('.', '').isdigit() else 1
+
+                    student_scores.append(stud_val)
+                    max_scores.append(max_val)
+                    total_score += stud_val
+
+                    if max_val <= 1:
+                        test_total_count += 1
+                        if stud_val >= 1:
+                            test_done_count += 1
+                    else:
+                        if stud_val > 0:
+                            hard_scores.append(stud_val)
+
+                # Определяем категорию студента
+                hard_submitted_all = len(hard_scores) == sum(1 for col in hw_columns if max_scores_row[col] > 1)
+                max_possible_score = sum(max_scores_row[col] for col in hw_columns if not pd.isna(max_scores_row[col]))
+                ratio = total_score / max_possible_score if max_possible_score > 0 else 0
+
+                if hard_submitted_all and ratio >= 0.70:
+                    category = 1
+                    category_emoji = "🔥"
+                elif ratio >= 0.42:
+                    category = 2
+                    category_emoji = "📈"
+                else:
+                    category = 3
+                    category_emoji = "📚"
+
+                avg_percent, best_entries = get_best_hw_info(headers, hw_columns, student_scores, max_scores,
+                                                             lesson_numbers)
+                best_hw_str = format_best_hw(best_entries)
+
+                # Генерируем сообщение со статистикой
+                stats_message = generate_stats_message(
+                    name, category_emoji, len(hw_columns), test_done_count, test_total_count,
+                    avg_percent, best_hw_str, lives, lesson_range, category
+                )
+
+                # Создаем график
+                try:
+                    graph_buf = create_detailed_graph(lesson_numbers, student_scores, max_scores, lives, name)
+
+                    # Отправляем сообщение с графиком
+                    bot.send_photo(
+                        message.chat.id,
+                        graph_buf,
+                        caption=stats_message,
+                        parse_mode='Markdown'
+                    )
+                    graph_buf.close()
+
+                except Exception as e:
+                    print(f"Ошибка создания/отправки графика для {name}: {e}")
+                    try:
+                        bot.send_message(
+                            message.chat.id,
+                            f"📊 *Статистика для {name}* (график не удалось создать)\n\n{stats_message}",
+                            parse_mode='Markdown'
+                        )
+                    except Exception as send_error:
+                        print(f"Ошибка отправки сообщения для {name}: {send_error}")
+                        continue
+
+                processed_count += 1
+
+            # Обновляем прогресс после каждой группы
+            try:
+                if limit_text:
+                    progress_text = f"📊 Обработано {processed_count}/{total_to_process} студентов{limit_text}..."
+                else:
+                    progress_text = f"📊 Обработано {processed_count}/{total_to_process} студентов..."
+
+                bot.edit_message_text(
+                    progress_text,
+                    message.chat.id,
+                    progress_msg.message_id
+                )
+            except:
+                pass
+
+            # Задержка между группами
+            if batch_end < len(students_to_process):
+                time.sleep(5)
+                print(f"⏳ Пауза между группами... Обработано: {processed_count}/{total_to_process}")
+
+        # Удаляем сообщение о прогрессе и отправляем итог
+        try:
+            bot.delete_message(message.chat.id, progress_msg.message_id)
+        except:
+            pass
+
+        # Итоговое сообщение с учетом лимита
+        if limit is not None and limit < original_count:
+            bot.send_message(
+                message.chat.id,
+                f"✅ Статистика сгенерирована для {processed_count} студентов (выведено по лимиту {limit} из {original_count})"
+            )
+        else:
+            bot.send_message(
+                message.chat.id,
+                f"✅ Статистика сгенерирована для {processed_count} студентов"
+            )
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка генерации статистики: {e}")
+
+
+def generate_stats_message(name, emoji, total_hw_count, test_done_count, test_total_count,
+                           avg_percent, best_hw_str, lives, lesson_range, category):
+    """Генерирует сообщение со статистикой"""
+
+    lives_status = " Ни одной жизни не потеряно! 🚘" if lives >= 3 else f" Потеряно жизней: {3 - lives}"
+
+    category_text = {
+        1: "🔥 *Категория 1 - Отличные результаты*",
+        2: "📈 *Категория 2 - Хорошие результаты*",
+        3: "📚 *Категория 3 - Требует улучшения*"
+    }.get(category, "")
+
+    message = (
+        f" *Статистика для {name}*\n"
+        f"{category_text}\n"
+        f"*Диапазон:* занятия {lesson_range}\n\n"
+        f"📊 *Общая статистика за {total_hw_count} занятий:*\n"
+        f"- Выполнено тестовых ДЗ: {test_done_count}/{test_total_count}\n"
+    )
+
+    if avg_percent > 0:
+        message += f"- Средний балл за сложные ДЗ: {avg_percent:.1f}%\n"
+
+    if best_hw_str and best_hw_str != "—":
+        message += f"- Лучшие результаты:\n{best_hw_str}\n\n"
+    else:
+        message += "\n"
+
+    message += f"💫 {lives_status}"
+
+    return message
+
+
+# ОБРАБОТЧИКИ ДЛЯ ОБЫЧНЫХ РЕЖИМОВ (preview/send)
+@bot.message_handler(content_types=['document'])
+def handle_document(message):
+    """Обработка загруженных Excel файлов для обычных режимов"""
+    user_id = message.from_user.id
+    current_step = user_data.get(user_id, {}).get('step')
+
+    # Если это режим статистики - пропускаем
+    if current_step in ['waiting_stats_excel', 'waiting_stats_lesson_range']:
+        return
+
+    if current_step != 'waiting_excel':
         bot.send_message(message.chat.id, "❌ Сначала выберите действие в меню")
         return
 
@@ -128,16 +467,13 @@ def handle_document(message):
         return
 
     try:
-        # Скачиваем файл
         file_info = bot.get_file(message.document.file_id)
         downloaded_file = bot.download_file(file_info.file_path)
 
-        # Сохраняем временно
         file_path = f"temp_{user_id}_{message.document.file_name}"
         with open(file_path, 'wb') as new_file:
             new_file.write(downloaded_file)
 
-        # Сохраняем путь в данные пользователя
         user_data[user_id]['excel_file'] = file_path
         user_data[user_id]['step'] = 'waiting_vk_token'
 
@@ -151,6 +487,8 @@ def handle_document(message):
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Ошибка загрузки файла: {e}")
 
+
+# ... остальные обработчики для preview/send режимов остаются без изменений ...
 @bot.message_handler(func=lambda message: user_data.get(message.from_user.id, {}).get('step') == 'waiting_vk_token')
 def handle_vk_token(message):
     """Обработка VK токена"""
@@ -164,62 +502,6 @@ def handle_vk_token(message):
         reply_markup=ReplyKeyboardRemove()
     )
 
-@bot.message_handler(
-    func=lambda message: user_data.get(message.from_user.id, {}).get('step') == 'waiting_content_block')  # ← ИЗМЕНИЛИ ФИЛЬТР
-def handle_block_for_content(message):
-    """Обрабатывает ввод номера блока и показывает контент"""
-    user_id = message.from_user.id
-
-    try:
-        block_number = int(message.text.strip())
-        show_motivation_content(message, block_number)
-
-    except ValueError:
-        bot.send_message(
-            message.chat.id,
-            "❌ Пожалуйста, введите корректный номер блока (цифру):"
-        )
-
-def show_motivation_content(message, block_number):
-    """Показывает мотивационный контент для указанного блока"""
-
-    # Импортируем данные из static_data
-    from static_data import quotes, motivation_videos, future_wishes
-
-    # Проверяем, существует ли такой блок в данных
-    if block_number not in quotes or block_number not in motivation_videos or block_number not in future_wishes:
-        bot.send_message(
-            message.chat.id,
-            f"❌ Контент для блока {block_number} не найден.\n"
-            f"Доступные блоки: {list(quotes.keys())}",
-            parse_mode='Markdown'
-        )
-        user_data[message.from_user.id] = {'step': 'main_menu'}
-        return
-
-    quote = quotes[block_number]
-    video_url = motivation_videos[block_number]
-    wish = future_wishes[block_number]
-
-    content_message = (
-        f"📚 *Мотивационные материалы для блока {block_number}*\n\n"
-        f"💫 *Цитата:*\n{quote}\n\n"
-        f"🎥 *Видео:* {video_url}\n\n"
-        f"✨ *Пожелание:*\n{wish}"
-    )
-
-    keyboard = InlineKeyboardMarkup()
-    keyboard.add(InlineKeyboardButton("📝 Показать другой блок", callback_data="show_content"))
-    keyboard.add(InlineKeyboardButton("⬅️ В главное меню", callback_data="back_to_menu"))
-
-    bot.send_message(
-        message.chat.id,
-        content_message,
-        reply_markup=keyboard,
-        parse_mode='Markdown'
-    )
-
-    user_data[message.from_user.id] = {'step': 'main_menu'}
 
 @bot.message_handler(func=lambda message: user_data.get(message.from_user.id, {}).get('step') == 'waiting_block_number')
 def handle_block_number(message):
@@ -237,13 +519,13 @@ def handle_block_number(message):
     except ValueError:
         bot.send_message(message.chat.id, "❌ Введите число для номера блока")
 
+
 @bot.message_handler(func=lambda message: user_data.get(message.from_user.id, {}).get('step') == 'waiting_lesson_range')
 def handle_lesson_range(message):
     """Обработка диапазона уроков"""
     user_id = message.from_user.id
     user_data[user_id]['lesson_range'] = message.text
 
-    # Если режим отправки - запрашиваем пропуск строк
     if user_data[user_id]['mode'] == 'send':
         user_data[user_id]['step'] = 'waiting_skip_rows'
         bot.send_message(
@@ -254,25 +536,23 @@ def handle_lesson_range(message):
             parse_mode='Markdown'
         )
     else:
-        # Для превью сразу показываем подтверждение
         show_confirmation(user_id, message)
+
 
 @bot.message_handler(func=lambda message: user_data.get(message.from_user.id, {}).get('step') == 'waiting_skip_rows')
 def handle_skip_rows(message):
-    """Обработка пропуска строк"""
+    """Обработка пропуска студентов"""
     user_id = message.from_user.id
 
-    # Если пользователь ввел "нет" или пустое значение - не пропускаем никого
-    if message.text.lower() in ['нет', 'нет', 'no', '']:
+    if message.text.lower() in ['нет', 'no', '']:
         user_data[user_id]['skip_rows'] = ''
     else:
         user_data[user_id]['skip_rows'] = message.text
-
-    # Показываем подтверждение
     show_confirmation(user_id, message)
 
+
 def show_confirmation(user_id, message):
-    """Показать подтверждение отправки"""
+    """Показывает подтверждение отправки"""
     data = user_data[user_id]
 
     confirm_text = (
@@ -295,6 +575,7 @@ def show_confirmation(user_id, message):
 
     user_data[user_id]['step'] = 'waiting_confirmation'
 
+
 @bot.message_handler(func=lambda message: user_data.get(message.from_user.id, {}).get('step') == 'waiting_confirmation')
 def handle_confirmation(message):
     """Обработка подтверждения пользователя"""
@@ -312,6 +593,7 @@ def handle_confirmation(message):
 
     else:
         bot.send_message(message.chat.id, "❌ Пожалуйста, ответьте 'да' или 'нет'")
+
 
 def launch_program(user_id, message):
     """Запуск выбранного режима"""
@@ -337,12 +619,17 @@ def launch_program(user_id, message):
             )
             bot.send_message(message.chat.id, "✅ Сообщения отправлены студентам!")
 
+        # Очищаем временный файл
+        if os.path.exists(data['excel_file']):
+            os.remove(data['excel_file'])
+
         user_data[user_id] = {'step': 'main_menu'}
         start(message)
 
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
         user_data[user_id] = {'step': 'main_menu'}
+
 
 if __name__ == "__main__":
     print("🤖 Бот запущен!")

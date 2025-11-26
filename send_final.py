@@ -166,11 +166,7 @@ def get_curators_vk_ids(df_full):
     return curators
 
 def get_video_attachment(vk, video_url):
-    """
-    Преобразует URL видео VK в attachment вида 'video-123456_789'
-    """
     try:
-        # Извлекаем owner_id и video_id из URL
         match = re.search(r'video(-?\d+)_(\d+)', video_url)
         if match:
             owner_id = match.group(1)
@@ -252,7 +248,6 @@ def preview_mode(vk_token=None, block_number=None, lesson_range=None, excel_file
     lesson_numbers = list(lesson_numbers)
     hw_columns = list(hw_columns)
 
-    # Собираем до 2 учеников на категорию
     representatives = {1: [], 2: [], 3: []}
     for _, row in student_rows:
         full_name = row.iloc[1]
@@ -319,7 +314,6 @@ def preview_mode(vk_token=None, block_number=None, lesson_range=None, excel_file
         if all(len(representatives[cat]) >= 2 for cat in [1, 2, 3]):
             break
 
-    # === Отправка куратору ===
     if not vk_token:
         print("❌ Не задан VK_TOKEN — не удастся отправить превью")
         return
@@ -342,7 +336,6 @@ def preview_mode(vk_token=None, block_number=None, lesson_range=None, excel_file
                 print(f"⚠️ Не найдены данные для графика: {rep['original_name']}")
                 continue
 
-            # Собираем данные для графика
             student_scores = []
             max_scores = []
             lives = int(student_found.iloc[4]) if pd.notna(student_found.iloc[4]) else 0
@@ -355,7 +348,6 @@ def preview_mode(vk_token=None, block_number=None, lesson_range=None, excel_file
                 student_scores.append(stud_val)
                 max_scores.append(max_val)
 
-            # Создаём график
             try:
                 graph_buf = create_detailed_graph(lesson_numbers, student_scores, max_scores, lives,
                                                   rep['original_name'])
@@ -369,7 +361,6 @@ def preview_mode(vk_token=None, block_number=None, lesson_range=None, excel_file
 
             for curator_id in curators:
                 try:
-                    # Первое сообщение с текстом и графиком
                     vk.messages.send(
                         user_id=curator_id,
                         message=message_with_header,
@@ -377,7 +368,6 @@ def preview_mode(vk_token=None, block_number=None, lesson_range=None, excel_file
                         random_id=0
                     )
 
-                    # Второе сообщение с видео как attachment
                     video_attach = get_video_attachment(vk, video_url)
                     if video_attach:
                         vk.messages.send(
@@ -387,7 +377,6 @@ def preview_mode(vk_token=None, block_number=None, lesson_range=None, excel_file
                             random_id=0
                         )
                     else:
-                        # Fallback: если не удалось распарсить, отправляем ссылку
                         vk.messages.send(
                             user_id=curator_id,
                             message=f"{video_url}",
@@ -403,7 +392,6 @@ def preview_mode(vk_token=None, block_number=None, lesson_range=None, excel_file
 def send_mode(vk_token=None, block_number=None, lesson_range=None, skip_rows_input="", excel_file=None, chat_id=None):
     current_excel_file = excel_file if excel_file else EXCEL_FILE
 
-    # Получение параметров - все данные должны передаваться аргументами
     if vk_token is None:
         vk_token = ""
     if block_number is None:
@@ -553,7 +541,6 @@ def send_mode(vk_token=None, block_number=None, lesson_range=None, skip_rows_inp
         )
 
         try:
-            # === Создание и отправка графика ===
             try:
                 graph_buf = create_detailed_graph(lesson_numbers, student_scores, max_scores, lives, name)
                 graph_attach = upload_graph_to_vk(vk, vk_id, graph_buf)
@@ -561,7 +548,6 @@ def send_mode(vk_token=None, block_number=None, lesson_range=None, skip_rows_inp
                 print(f"⚠️ Ошибка создания графика для {name}: {e}")
                 graph_attach = None
 
-            # Отправка текстового сообщения С ГРАФИКОМ
             vk.messages.send(
                 user_id=vk_id,
                 message=message_text,
@@ -569,7 +555,6 @@ def send_mode(vk_token=None, block_number=None, lesson_range=None, skip_rows_inp
                 random_id=0
             )
 
-            # Отправка видео
             video_attach = get_video_attachment(vk, video_url)
             if video_attach:
                 vk.messages.send(
