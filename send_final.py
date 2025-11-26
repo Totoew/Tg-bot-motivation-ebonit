@@ -7,21 +7,14 @@ import matplotlib
 import getpass
 #import pymorphy2
 import vk_api
-
 from grafik import create_detailed_graph
-
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-
 from static_data import motivation_videos, future_wishes, quotes
 
 EXCEL_FILE = None
 
-# --- Вспомогательные функции ---
 def detect_gender(full_name):
-    """
-    Определяет пол по окончанию имени/отчества
-    """
     if pd.isna(full_name) or not isinstance(full_name, str):
         return "unknown"
 
@@ -43,13 +36,9 @@ def detect_gender(full_name):
         return "female"
     elif first_name.endswith(male_endings):
         return "male"
-
     return "unknown"
 
 def confirm_action(message="Продолжить?"):
-    """
-    Запрос подтверждения у пользователя
-    """
     print(f"\n⚠️  {message}")
     print("1 - Да, продолжить")
     print("2 - Нет, отменить")
@@ -64,9 +53,6 @@ def confirm_action(message="Продолжить?"):
             print("❌ Неверный выбор. Введите 1 или 2")
 
 def adapt_wish_by_gender(wish_text, gender):
-    """
-    Адаптирует текст пожелания под пол ученика
-    """
     if gender == "male":
         return wish_text.replace('стал(а)', 'стал').replace('подготовился(лась)', 'подготовился').replace('уверен(а)', 'уверен')
     elif gender == "female":
@@ -75,9 +61,6 @@ def adapt_wish_by_gender(wish_text, gender):
         return wish_text  # Оставляем оба варианта если пол не определили
 
 def get_vk_token_gui():
-    """
-    Для GUI версии - токен передаётся как параметр
-    """
     return None
 
 def extract_name(full_name):
@@ -97,7 +80,6 @@ def parse_lesson_range(user_input):
        return list(range(start, end + 1))
    else:
        return [int(user_input)]
-
 
 def load_template(category):
     from templates_embedded import TEMPLATES
@@ -144,7 +126,6 @@ def build_message_for_student(
         test_done_count, test_total_count,
         avg_percent, best_hw_str, lives
 ):
-    # ⭐⭐ ПРАВИЛЬНАЯ ИНДЕКСАЦИЯ ДЛЯ 9 ЭЛЕМЕНТОВ ⭐⭐
     quote_index = block_number - 1
     wish_index = block_number - 1
     video_index = block_number - 1
@@ -226,12 +207,7 @@ def get_vk_token():
        return None
    return token
 
-# --- Режим ПРЕВЬЮ ---
 def preview_mode(vk_token=None, block_number=None, lesson_range=None, excel_file=None):
-    """
-    Режим превью с поддержкой GUI
-    """
-    # Используем переданный файл или глобальный EXCEL_FILE
     current_excel_file = excel_file if excel_file else EXCEL_FILE
 
     if vk_token is None:
@@ -422,31 +398,25 @@ def preview_mode(vk_token=None, block_number=None, lesson_range=None, excel_file
                     print(f"✅ Превью отправлено куратору: {curator_id}")
                 except Exception as e:
                     print(f"❌ Ошибка отправки превью куратору {curator_id}: {e}")
-
     print(f"\n✅ Превью отправлено: {total_sent} сообщений ({len(curators)} кураторам)")
 
-
 def send_mode(vk_token=None, block_number=None, lesson_range=None, skip_rows_input="", excel_file=None, chat_id=None):
-    """
-    Режим отправки с подтверждением через бота
-    """
-    # Используем переданный файл или глобальный EXCEL_FILE
     current_excel_file = excel_file if excel_file else EXCEL_FILE
 
-    # Получение параметров
+    # Получение параметров - все данные должны передаваться аргументами
     if vk_token is None:
-        vk_token = get_vk_token()
+        vk_token = ""
     if block_number is None:
-        block_number = int(input("Номер блока: "))
+        raise ValueError("Номер блока не указан")
     if lesson_range is None:
-        lesson_input = input("Диапазон домашек (например, 12-17): ")
+        raise ValueError("Диапазон уроков не указан")
     else:
         lesson_input = lesson_range
 
     if skip_rows_input:
         skip_input = skip_rows_input
     else:
-        skip_input = input("Номера студентов для пропуска (через запятую, например: 1,3): ").strip()
+        skip_input = ""  # Если не указано - не пропускаем никого
 
     skip_students = set()
     if skip_input:
@@ -481,7 +451,7 @@ def send_mode(vk_token=None, block_number=None, lesson_range=None, skip_rows_inp
 
     # Подготовка списка студентов для отправки
     students_to_process = []
-    for student_number, (original_idx, row) in enumerate(student_rows, 1):  # ← Начинаем с 1!
+    for student_number, (original_idx, row) in enumerate(student_rows, 1):
         excel_row_number = original_idx + 1
 
         # Пропускаем по номеру студента, а не по строке Excel
@@ -517,6 +487,7 @@ def send_mode(vk_token=None, block_number=None, lesson_range=None, skip_rows_inp
         if total_students > 5:
             print(f"  ... и еще {total_students - 5} учеников")
 
+    # ⚠️ УБЕРИТЕ КОНСОЛЬНЫЙ ЗАПРОС ПОДТВЕРЖДЕНИЯ
     print("🔄 Начинаю отправку...")
 
     if not vk_token:
@@ -528,20 +499,6 @@ def send_mode(vk_token=None, block_number=None, lesson_range=None, skip_rows_inp
     vk = vk_session.get_api()
 
     sent_count = 0
-    total_students = len(students_to_process)
-
-    # Создаем сообщение с прогресс-баром
-    progress_message = None
-    if students_to_process and chat_id:
-        try:
-            progress_text = create_progress_bar(0, total_students, "Начинаю отправку...")
-            progress_message = bot.send_message(
-                chat_id,
-                progress_text,
-                parse_mode='Markdown'
-            )
-        except Exception as e:
-            print(f"⚠️ Не удалось создать прогресс-бар: {e}")
 
     for i, (original_idx, row, excel_row_number, student_number) in enumerate(students_to_process):
         full_name = row.iloc[1]
@@ -632,60 +589,10 @@ def send_mode(vk_token=None, block_number=None, lesson_range=None, skip_rows_inp
             sent_count += 2
             print(f"✅ Отправлено: #{student_number} {name} (строка Excel: {excel_row_number})")
 
-            # === ОБНОВЛЯЕМ ПРОГРЕСС-БАР ===
-            if progress_message:
-                try:
-                    current_status = f"Отправлено: {name}"
-                    progress_text = create_progress_bar(i + 1, total_students, current_status)
-
-                    bot.edit_message_text(
-                        chat_id=progress_message.chat.id,
-                        message_id=progress_message.message_id,
-                        text=progress_text,
-                        parse_mode='Markdown'
-                    )
-                except Exception as e:
-                    print(f"⚠️ Не удалось обновить прогресс-бар: {e}")
-
         except Exception as e:
             print(f"❌ Ошибка для #{student_number} {name}: {e}")
 
-            # Обновляем прогресс-бар с ошибкой
-            if progress_message:
-                try:
-                    current_status = f"Ошибка: {name}"
-                    progress_text = create_progress_bar(i + 1, total_students, current_status)
-                    bot.edit_message_text(
-                        chat_id=progress_message.chat.id,
-                        message_id=progress_message.message_id,
-                        text=progress_text,
-                        parse_mode='Markdown'
-                    )
-                except:
-                    pass
-
-    # Финальное обновление прогресс-бара
-    if progress_message:
-        try:
-            success_count = sent_count // 2
-            final_text = (
-                f"✅ *Отправка завершена!*\n\n"
-                f"📊 *Результат:*\n"
-                f"• Студентов: {total_students}\n"
-                f"• Сообщений: {sent_count}\n"
-                f"• Успешно: {success_count}/{total_students}"
-            )
-            bot.edit_message_text(
-                chat_id=progress_message.chat.id,
-                message_id=progress_message.message_id,
-                text=final_text,
-                parse_mode='Markdown'
-            )
-        except Exception as e:
-            print(f"⚠️ Не удалось обновить финальный прогресс-бар: {e}")
-
     print(f"\n🏁 Отправка завершена. Всего отправлено: {sent_count} сообщений")
-
 
 def create_progress_bar(current, total, status="", length=10):
     """

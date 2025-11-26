@@ -60,7 +60,6 @@ def create_detailed_graph(lesson_nums, student_scores, max_scores, lives, name):
             ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 2,
                      f"{pct:.0f}%", ha='center', va='bottom', fontweight='bold')
 
-    # Подпись тестовых ДЗ — текст вместо значков
     checkbox_parts = []
     for lesson in lesson_nums:
         if lesson in test_lessons:

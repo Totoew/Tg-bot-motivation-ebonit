@@ -8,7 +8,6 @@ with open(r"C:\Users\Пользователь\Desktop\bot-token.txt", 'r', encod
 
 bot = telebot.TeleBot(content)
 
-# Хранилище состояний пользователей
 user_data = {}
 
 def debug_user_data(user_id):
@@ -63,11 +62,10 @@ def handle_callback(call):
         start(call.message)
 
 def show_instructions(message):
-    """Показывает инструкцию по использованию бота"""
 
     instructions = """
 🔧 ИНСТРУКЦИЯ ПО ИСПОЛЬЗОВАНИЮ БОТА
-Видео по настройке: 
+Видео по настройке: https://vk.com/video550891157_456240007?list=ln-uAvDnXEJZhbLzMlBoi
 
 🎯 РЕЖИМ «ПРЕВЬЮ»:
 • Отправляет примеры сообщений кураторам для проверки
@@ -95,9 +93,7 @@ def show_instructions(message):
 7. Подтвердите отправку
 
 ⏱ *ВРЕМЯ ОТПРАВКИ:*
-• Зависит от количества студентов
-• В среднем 5-10 секунд на студента
-• Прогресс отображается в реальном времени
+• В среднем 5 минут на 30 учеников
 
 ❓ ЧАСТЫЕ ПРОБЛЕМЫ:
 • Файл не загружается - проверьте формат (.xlsx/.xls)
@@ -127,7 +123,6 @@ def handle_document(message):
         bot.send_message(message.chat.id, "❌ Сначала выберите действие в меню")
         return
 
-    # Проверяем что это Excel файл
     if not message.document.file_name.endswith(('.xlsx', '.xls')):
         bot.send_message(message.chat.id, "❌ Пожалуйста, загрузите Excel файл (.xlsx или .xls)")
         return
@@ -202,12 +197,10 @@ def show_motivation_content(message, block_number):
         user_data[message.from_user.id] = {'step': 'main_menu'}
         return
 
-    # Получаем контент для блока
     quote = quotes[block_number]
     video_url = motivation_videos[block_number]
     wish = future_wishes[block_number]
 
-    # Формируем сообщение
     content_message = (
         f"📚 *Мотивационные материалы для блока {block_number}*\n\n"
         f"💫 *Цитата:*\n{quote}\n\n"
@@ -215,7 +208,6 @@ def show_motivation_content(message, block_number):
         f"✨ *Пожелание:*\n{wish}"
     )
 
-    # Создаем клавиатуру для возврата
     keyboard = InlineKeyboardMarkup()
     keyboard.add(InlineKeyboardButton("📝 Показать другой блок", callback_data="show_content"))
     keyboard.add(InlineKeyboardButton("⬅️ В главное меню", callback_data="back_to_menu"))
@@ -227,7 +219,6 @@ def show_motivation_content(message, block_number):
         parse_mode='Markdown'
     )
 
-    # Сбрасываем состояние пользователя
     user_data[message.from_user.id] = {'step': 'main_menu'}
 
 @bot.message_handler(func=lambda message: user_data.get(message.from_user.id, {}).get('step') == 'waiting_block_number')
