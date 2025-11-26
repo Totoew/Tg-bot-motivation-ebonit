@@ -1,0 +1,28 @@
+# Excel-файлы с данными
+Новая таблица.xlsx
+students.xlsx
+*.xlsx
+
+# Виртуальная среда
+.venv/
+venv/
+env/
+
+# Системные файлы
+.DS_Store
+__pycache__/
+*.pyc
+
+config.py
+.env
+secrets.py
+
+
+# IDE
+.idea/
+.vscode/
+
+# Системные файлы
+.DS_Store
+Thumbs.db
+
