@@ -1,8 +1,11 @@
 import time
+import re
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
 import os
 import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
 import io
 from send_final import (
     preview_mode,
@@ -15,13 +18,33 @@ from send_final import (
     extract_name
 )
 
+def extract_lesson_number(header):
+    """Извлекает номер урока из заголовка, включая пробники с дробными номерами"""
+    if pd.isna(header):
+        return None
+
+    header_str = str(header).strip()
+
+    # Для формата "24.1. Пробник №1" - возвращаем дробное число 24.1
+    match_float = re.match(r'^(\d+)\.(\d+)', header_str)
+    if match_float:
+        whole_part = int(match_float.group(1))
+        decimal_part = int(match_float.group(2))
+        return whole_part + decimal_part * 0.1
+
+    # Для обычных ДЗ: "24. Обычное ДЗ" - возвращаем целое число 24
+    match_int = re.match(r'^(\d+)', header_str)
+    return int(match_int.group(1)) if match_int else None
+
+with open(r"C:\Users\Пользователь\Desktop\bot-token.txt", 'r', encoding='utf-8') as file:
+    content = file.read()
+
 with open(r"C:\Users\Пользователь\Desktop\bot-token.txt", 'r', encoding='utf-8') as file:
     content = file.read()
 
 bot = telebot.TeleBot(content)
 
 user_data = {}
-
 
 @bot.message_handler(commands=['start'])
 def start(message):
@@ -33,6 +56,7 @@ def start(message):
     keyboard.add(InlineKeyboardButton("👁️ ПРЕВЬЮ", callback_data="preview"))
     keyboard.add(InlineKeyboardButton("📤 ОТПРАВКА", callback_data="send"))
     keyboard.add(InlineKeyboardButton("📊 ПОЛУЧИТЬ СТАТИСТИКУ", callback_data="get_stats"))
+    keyboard.add(InlineKeyboardButton("📈 ВЫВЕСТИ ГРАФИК ПРОБНИКОВ", callback_data="probniki_stats"))  # НОВАЯ КНОПКА
     keyboard.add(InlineKeyboardButton("⚙️ НАСТРОЙКИ", callback_data="settings"))
     keyboard.add(InlineKeyboardButton("🎥 ВИДЕО-ИНСТРУКЦИЯ",
                                       url="https://docs.google.com/document/d/1utGllba1nr1QqmnLpOK03hwYpY87NmVIyDgsfk3kJpA/edit?usp=sharing"))
@@ -61,6 +85,10 @@ def handle_callback(call):
     elif call.data == "get_stats":
         bot.send_message(call.message.chat.id, "📁 Загрузите Excel файл для статистики:")
         user_data[user_id] = {'step': 'waiting_stats_excel'}
+
+    elif call.data == "probniki_stats":  # НОВЫЙ ОБРАБОТЧИК
+        bot.send_message(call.message.chat.id, "📁 Загрузите Excel файл для анализа пробников:")
+        user_data[user_id] = {'step': 'waiting_probniki_excel'}
 
     elif call.data == "settings":
         show_instructions(call.message)
@@ -125,6 +153,271 @@ def show_instructions(message):
         parse_mode='Markdown'
     )
 
+@bot.message_handler(func=lambda message: user_data.get(message.from_user.id, {}).get('step') == 'waiting_probniki_excel',
+                     content_types=['document'])
+def handle_probniki_excel(message):
+    """Обрабатывает загрузку Excel файла для пробников"""
+    user_id = message.from_user.id
+
+    if not message.document.file_name.endswith(('.xlsx', '.xls')):
+        bot.send_message(message.chat.id, "❌ Пожалуйста, загрузите Excel файл (.xlsx или .xls)")
+        return
+
+    try:
+        file_info = bot.get_file(message.document.file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+
+        file_path = f"temp_probniki_{user_id}_{message.document.file_name}"
+        with open(file_path, 'wb') as new_file:
+            new_file.write(downloaded_file)
+
+        user_data[user_id]['excel_file'] = file_path
+        user_data[user_id]['step'] = 'waiting_probniki_limit'
+
+        bot.send_message(
+            message.chat.id,
+            "👥 *Сколько учеников вывести?*\n\n"
+            "Введите число (например: 10) или 'все' для вывода всех учеников:",
+            parse_mode='Markdown'
+        )
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка загрузки файла: {e}")
+
+
+@bot.message_handler(
+    func=lambda message: user_data.get(message.from_user.id, {}).get('step') == 'waiting_probniki_limit')
+def handle_probniki_limit(message):
+    """Обрабатывает ввод лимита учеников для пробников"""
+    user_id = message.from_user.id
+
+    try:
+        limit_input = message.text.strip().lower()
+
+        if limit_input == 'все':
+            limit = None
+        else:
+            try:
+                limit = int(limit_input)
+                if limit <= 0:
+                    bot.send_message(message.chat.id, "❌ Число должно быть больше 0")
+                    return
+            except ValueError:
+                bot.send_message(message.chat.id, "❌ Введите число или 'все'")
+                return
+
+        bot.send_message(message.chat.id, "⏳ Анализирую пробники...")
+        generate_probniki_stats(
+            message,
+            user_data[user_id]['excel_file'],
+            limit
+        )
+
+        # Очистка
+        if os.path.exists(user_data[user_id]['excel_file']):
+            os.remove(user_data[user_id]['excel_file'])
+        user_data[user_id] = {'step': 'main_menu'}
+
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
+
+
+def generate_probniki_stats(message, excel_file, limit=None):
+    """Генерирует комбинированные графики по пробникам"""
+    try:
+        # Читаем Excel файл
+        df_full = pd.read_excel(excel_file, header=None)
+        headers = df_full.iloc[0]
+        max_scores_row = df_full.iloc[6]
+        student_rows = list(df_full.iloc[7:].iterrows())
+
+        # Карта пробников
+        probniki_info = {
+            'AF': {'name': 'Пробник 1', 'search_terms': ['AF', 'ПРОБНИК 1', 'ПРОБНИК №1', '1.1']},
+            'AS': {'name': 'Пробник 2', 'search_terms': ['AS', 'ПРОБНИК 2', 'ПРОБНИК №2', '2.1']},
+            'BF': {'name': 'Пробник 3', 'search_terms': ['BF', 'ПРОБНИК 3', 'ПРОБНИК №3', '3.1']},
+            'BS': {'name': 'Пробник 4', 'search_terms': ['BS', 'ПРОБНИК 4', 'ПРОБНИК №4', '4.1']},
+            'CF': {'name': 'Пробник 5', 'search_terms': ['CF', 'ПРОБНИК 5', 'ПРОБНИК №5', '5.1']},
+            'CS': {'name': 'Пробник 6', 'search_terms': ['CS', 'ПРОБНИК 6', 'ПРОБНИК №6', '6.1']},
+            'DF': {'name': 'Пробник 7', 'search_terms': ['DF', 'ПРОБНИК 7', 'ПРОБНИК №7', '7.1']},
+            'DS': {'name': 'Пробник 8', 'search_terms': ['DS', 'ПРОБНИК 8', 'ПРОБНИК №8', '8.1']}
+        }
+
+        # Находим столбцы пробников
+        probniki_columns = {}
+
+        for col_idx in headers[19:].index:
+            header_text = str(headers[col_idx]).upper().strip()
+
+            if not header_text or header_text == 'NAN':
+                continue
+
+            for probnik_key, probnik_data in probniki_info.items():
+                for search_term in probnik_data['search_terms']:
+                    if search_term.upper() in header_text:
+                        if probnik_key not in probniki_columns:
+                            probniki_columns[probnik_key] = col_idx
+                        break
+
+        print(f"🔍 Найдено пробников: {len(probniki_columns)}")
+
+        if not probniki_columns:
+            bot.send_message(message.chat.id, "❌ В файле не найдены пробники")
+            return
+
+        # Фильтруем студентов с VK ID
+        students_to_process = []
+        for original_idx, row in student_rows:
+            full_name = row.iloc[1]
+            vk_id_raw = row.iloc[2]
+
+            if pd.notna(vk_id_raw) and str(vk_id_raw).isdigit():
+                students_to_process.append((original_idx, row))
+
+        # Применяем лимит
+        if limit is not None and limit < len(students_to_process):
+            students_to_process = students_to_process[:limit]
+
+        total_to_process = len(students_to_process)
+        processed_count = 0
+
+        if total_to_process == 0:
+            bot.send_message(message.chat.id, "❌ В файле нет студентов с корректными VK ID")
+            return
+
+        progress_msg = bot.send_message(
+            message.chat.id,
+            f"📈 Анализирую {len(probniki_columns)} пробников для {total_to_process} студентов..."
+        )
+
+        # Упорядочиваем пробники
+        probnik_order = ['AF', 'AS', 'BF', 'BS', 'CF', 'CS', 'DF', 'DS']
+        ordered_probniki_names = [probniki_info[key]['name'] for key in probnik_order if key in probniki_columns]
+
+        for original_idx, row in students_to_process:
+            full_name = row.iloc[1]
+            name = extract_name(full_name)
+
+            # Собираем данные для графика
+            probniki_scores = []
+            probniki_max_scores = []
+
+            for probnik_key in probnik_order:
+                if probnik_key in probniki_columns:
+                    col_idx = probniki_columns[probnik_key]
+                    stud_val = row[col_idx] if pd.notna(row[col_idx]) else 0
+                    max_val = max_scores_row[col_idx] if pd.notna(max_scores_row[col_idx]) else 1
+
+                    try:
+                        stud_val = float(stud_val)
+                    except:
+                        stud_val = 0
+
+                    try:
+                        max_val = float(max_val)
+                    except:
+                        max_val = 1
+
+                    probniki_scores.append(stud_val)
+                    probniki_max_scores.append(max_val)
+
+            # ИСПОЛЬЗУЕМ create_detailed_graph ДЛЯ СОЗДАНИЯ ГРАФИКА
+            try:
+                print(f"🔄 Создаю график пробников для {name}...")
+
+                # Создаем номера для оси X (1, 2, 3, ...)
+                lesson_numbers = list(range(1, len(ordered_probniki_names) + 1))
+
+                # Используем проверенную функцию создания графика
+                graph_buf = create_detailed_graph(
+                    lesson_numbers,
+                    probniki_scores,
+                    probniki_max_scores,
+                    3,  # lives - фиктивное значение
+                    f"{name} - Пробники"
+                )
+
+                # Создаем текстовую статистику
+                probniki_percentages = []
+                for score, max_score in zip(probniki_scores, probniki_max_scores):
+                    percentage = (score / max_score * 100) if max_score > 0 else 0
+                    probniki_percentages.append(percentage)
+
+                avg_percent = sum(probniki_percentages) / len(probniki_percentages) if probniki_percentages else 0
+
+                # Детальная статистика по каждому пробнику
+                details = "\n".join([
+                    f"• {name}: {percent:.0f} баллов"
+                    for name, score, max_score, percent in zip(
+                        ordered_probniki_names, probniki_scores, probniki_max_scores, probniki_percentages
+                    )
+                ])
+
+                caption = (
+                    f"📊 *Пробники для {name}*\n\n"
+                    f"{details}\n\n"
+                    f"📈 Средний балл: {avg_percent:.0f}\n"
+                    f"🏆 Лучший результат: {max(probniki_percentages):.0f}"
+                )
+
+                # Отправляем график
+                bot.send_photo(
+                    message.chat.id,
+                    graph_buf,
+                    caption=caption,
+                    parse_mode='Markdown'
+                )
+                graph_buf.close()
+                print(f"✅ График отправлен для {name}")
+
+            except Exception as e:
+                print(f"❌ Ошибка создания графика для {name}: {str(e)}")
+                import traceback
+                print(f"❌ Детали ошибки: {traceback.format_exc()}")
+
+                # Текстовый вывод если график не создался
+                results_text = "\n".join([
+                    f"• {name}: {(score / max_score * 100) if max_score > 0 else 0:.0f} баллов"
+                    for name, score, max_score in zip(ordered_probniki_names, probniki_scores, probniki_max_scores)
+                ])
+
+                bot.send_message(
+                    message.chat.id,
+                    f"📊 *Пробники для {name}*\n\n{results_text}",
+                    parse_mode='Markdown'
+                )
+
+            processed_count += 1
+
+            # Обновляем прогресс
+            if processed_count % 2 == 0:
+                try:
+                    bot.edit_message_text(
+                        f"📈 Обработано {processed_count}/{total_to_process} студентов...",
+                        message.chat.id,
+                        progress_msg.message_id
+                    )
+                except:
+                    pass
+
+            # Задержка между студентами
+            time.sleep(2)
+
+        # Завершение
+        try:
+            bot.delete_message(message.chat.id, progress_msg.message_id)
+        except:
+            pass
+
+        bot.send_message(
+            message.chat.id,
+            f"✅ Анализ пробников завершен для {processed_count} студентов\n"
+            f"📊 Обработано пробников: {len(probniki_columns)}"
+        )
+
+    except Exception as e:
+        print(f"❌ Критическая ошибка: {e}")
+        bot.send_message(message.chat.id, f"❌ Ошибка анализа пробников: {e}")
 
 @bot.message_handler(func=lambda message: user_data.get(message.from_user.id, {}).get('step') == 'waiting_stats_excel',
                      content_types=['document'])
@@ -155,7 +448,6 @@ def handle_stats_excel(message):
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Ошибка загрузки файла: {e}")
 
-
 @bot.message_handler(
     func=lambda message: user_data.get(message.from_user.id, {}).get('step') == 'waiting_stats_lesson_range')
 def handle_stats_lesson_range(message):
@@ -183,8 +475,6 @@ def handle_stats_lesson_range(message):
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
 
-
-# ДОБАВЛЯЕМ НОВЫЙ ОБРАБОТЧИК ДЛЯ ЛИМИТА
 @bot.message_handler(func=lambda message: user_data.get(message.from_user.id, {}).get('step') == 'waiting_stats_limit')
 def handle_stats_limit(message):
     """Обрабатывает ввод лимита учеников для статистики"""
@@ -223,6 +513,24 @@ def handle_stats_limit(message):
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
 
+
+def extract_lesson_number(header):
+    """Извлекает номер урока из заголовка, включая пробники с дробными номерами"""
+    if pd.isna(header):
+        return None
+
+    header_str = str(header).strip()
+
+    # Для формата "24.1. Пробник №1" - возвращаем дробное число 24.1
+    match_float = re.match(r'^(\d+)\.(\d+)', header_str)
+    if match_float:
+        whole_part = int(match_float.group(1))
+        decimal_part = int(match_float.group(2))
+        return whole_part + decimal_part * 0.1
+
+    # Для обычных ДЗ: "24. Обычное ДЗ" - возвращаем целое число 24
+    match_int = re.match(r'^(\d+)', header_str)
+    return int(match_int.group(1)) if match_int else None
 
 def generate_and_send_stats(message, excel_file, lesson_range, limit=None):
     """Генерирует и отправляет статистику - с лимитом учеников"""
@@ -294,7 +602,6 @@ def generate_and_send_stats(message, excel_file, lesson_range, limit=None):
                 lives_raw = row.iloc[4]
                 lives = int(lives_raw) if pd.notna(lives_raw) else 0
 
-                # Собираем статистику
                 student_scores = []
                 max_scores = []
                 total_score = 0
@@ -345,7 +652,6 @@ def generate_and_send_stats(message, excel_file, lesson_range, limit=None):
                     avg_percent, best_hw_str, lives, lesson_range, category
                 )
 
-                # Создаем график
                 try:
                     graph_buf = create_detailed_graph(lesson_numbers, student_scores, max_scores, lives, name)
 
@@ -372,7 +678,6 @@ def generate_and_send_stats(message, excel_file, lesson_range, limit=None):
 
                 processed_count += 1
 
-            # Обновляем прогресс после каждой группы
             try:
                 if limit_text:
                     progress_text = f"📊 Обработано {processed_count}/{total_to_process} студентов{limit_text}..."
@@ -392,7 +697,6 @@ def generate_and_send_stats(message, excel_file, lesson_range, limit=None):
                 time.sleep(5)
                 print(f"⏳ Пауза между группами... Обработано: {processed_count}/{total_to_process}")
 
-        # Удаляем сообщение о прогрессе и отправляем итог
         try:
             bot.delete_message(message.chat.id, progress_msg.message_id)
         except:
@@ -413,10 +717,8 @@ def generate_and_send_stats(message, excel_file, lesson_range, limit=None):
     except Exception as e:
         bot.send_message(message.chat.id, f"❌ Ошибка генерации статистики: {e}")
 
-
 def generate_stats_message(name, emoji, total_hw_count, test_done_count, test_total_count,
                            avg_percent, best_hw_str, lives, lesson_range, category):
-    """Генерирует сообщение со статистикой"""
 
     lives_status = " Ни одной жизни не потеряно! 🚘" if lives >= 3 else f" Потеряно жизней: {3 - lives}"
 
@@ -446,8 +748,6 @@ def generate_stats_message(name, emoji, total_hw_count, test_done_count, test_to
 
     return message
 
-
-# ОБРАБОТЧИКИ ДЛЯ ОБЫЧНЫХ РЕЖИМОВ (preview/send)
 @bot.message_handler(content_types=['document'])
 def handle_document(message):
     """Обработка загруженных Excel файлов для обычных режимов"""
